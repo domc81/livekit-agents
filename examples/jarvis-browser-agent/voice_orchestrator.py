@@ -57,6 +57,9 @@ class VoiceOrchestrator:
         # Browser state tracking
         self.browser_is_open: bool = False
 
+        # Cancellation token for graceful shutdown
+        self.cancellation_requested = asyncio.Event()
+
         # Initialize Claude LLM for planning and intent classification
         self.llm_client = ChatAnthropic(
             model="claude-3-5-haiku-20241022",
@@ -157,9 +160,36 @@ Respond with ONLY one word: "browser_automation" or "conversation"."""
         """
         self.logger.info(f"Processing as conversation: {instruction}")
 
+        lower_instruction = instruction.lower()
+
+        # Handle time queries directly (no LLM needed)
+        if any(phrase in lower_instruction for phrase in ["what time", "current time", "what's the time", "tell me the time"]):
+            import datetime
+            now = datetime.datetime.now()
+            response = f"It's {now.strftime('%I:%M %p')}"
+            self.logger.debug(f"Time query response: {response}")
+            await self.session.say(response)
+            return
+
+        # Handle date queries directly (no LLM needed)
+        if any(phrase in lower_instruction for phrase in ["what date", "today's date", "what day", "what's today"]):
+            import datetime
+            now = datetime.datetime.now()
+            response = f"Today is {now.strftime('%A, %B %d, %Y')}"
+            self.logger.debug(f"Date query response: {response}")
+            await self.session.say(response)
+            return
+
+        # For other conversations, use LLM
+        import datetime
+        now = datetime.datetime.now()
+
         conversation_prompt = f"""You are Jarvis, a helpful AI assistant. Answer the user's question or respond to their input.
 Keep your response to 1-2 sentences, spoken naturally (no markdown, no asterisks, no formatting).
 Be conversational and helpful.
+
+Current time: {now.strftime('%I:%M %p')}
+Current date: {now.strftime('%A, %B %d, %Y')}
 
 User: {instruction}
 
@@ -356,6 +386,12 @@ Keep steps concise and actionable. Example:
         """
         return plan.get("summary", "I'll help you with that")
 
+    async def request_cancellation(self) -> None:
+        """Request cancellation of current execution"""
+        self.logger.info("Cancellation requested")
+        self.cancellation_requested.set()
+        await self.session.say("Cancelling execution...")
+
     async def _execute_plan(self) -> None:
         """Execute the confirmed plan with browser automation"""
         if not self.current_plan:
@@ -382,6 +418,13 @@ Keep steps concise and actionable. Example:
                 return
 
             for i, step in enumerate(steps, 1):
+                # Check for cancellation BEFORE each step
+                if self.cancellation_requested.is_set():
+                    self.logger.info("Execution cancelled by user")
+                    await self.session.say("Execution cancelled.")
+                    self.cancellation_requested.clear()
+                    return
+
                 self.logger.info(f"Step {i}/{total_steps}: {step}")
 
                 # Check for explicit close command
@@ -400,8 +443,13 @@ Keep steps concise and actionable. Example:
 
                 if not success:
                     self.logger.warning(f"Step failed: {result}")
-                    # Don't stop execution, just log and continue
-                    await self.session.say(f"Warning: {result}")
+                    # Make error message more user-friendly
+                    if "Could not click" in result or "Could not find clickable" in result:
+                        await self.session.say("I couldn't find that button. Let me continue...")
+                    elif "Could not type" in result or "Could not find input" in result:
+                        await self.session.say("I couldn't find that input field. Let me continue...")
+                    else:
+                        await self.session.say(f"Step had an issue. Continuing...")
                 else:
                     self.logger.debug(f"Step result: {result}")
 
