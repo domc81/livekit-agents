@@ -54,7 +54,10 @@ class VoiceOrchestrator:
         self.tool_registry = ToolRegistry(self.browser_tools)
         self.tool_executor = ToolExecutor(self.browser_tools)
 
-        # Initialize Claude LLM for planning
+        # Browser state tracking
+        self.browser_is_open: bool = False
+
+        # Initialize Claude LLM for planning and intent classification
         self.llm_client = ChatAnthropic(
             model="claude-3-5-haiku-20241022",
             api_key=config.anthropic_api_key,
@@ -83,10 +86,103 @@ class VoiceOrchestrator:
             # User is responding to confirmation prompt
             await self._handle_confirmation_response(instruction)
         elif self.phase in (ConversationPhase.IDLE, ConversationPhase.LISTENING):
-            # New instruction - start planning phase
-            await self._process_new_instruction(instruction, turn_ctx)
+            # New instruction - classify intent first
+            intent = await self._classify_intent(instruction)
+            self.logger.info(f"Classified intent: {intent}")
+
+            if intent == "browser_automation":
+                # Route to browser automation workflow
+                await self._process_new_instruction(instruction, turn_ctx)
+            elif intent == "conversation":
+                # Route to conversational response
+                await self._process_conversation(instruction)
+            else:
+                # Fallback to browser automation
+                await self._process_new_instruction(instruction, turn_ctx)
         else:
             self.logger.debug(f"Ignoring input during phase: {self.phase}")
+
+    async def _classify_intent(self, instruction: str) -> str:
+        """
+        Classify if instruction needs browser automation or is conversational.
+
+        Args:
+            instruction: User's instruction
+
+        Returns:
+            "browser_automation" or "conversation"
+        """
+        self.logger.debug(f"Classifying intent for: {instruction}")
+
+        classification_prompt = f"""Classify if this user instruction needs browser automation or is just conversation.
+
+User instruction: "{instruction}"
+
+Browser automation includes: opening websites, searching, clicking, typing, filling forms, extracting information, navigation.
+Conversation includes: questions, general chat, requests for information, explanations.
+
+Important: Phrases like "go to sleep", "open up to me", "search my memory" are conversation, NOT browser automation.
+
+Respond with ONLY one word: "browser_automation" or "conversation"."""
+
+        try:
+            message = self.llm_client.invoke(
+                [
+                    {"role": "user", "content": classification_prompt},
+                ]
+            )
+
+            response_text = message.content.strip().lower()
+
+            if "browser_automation" in response_text:
+                return "browser_automation"
+            elif "conversation" in response_text:
+                return "conversation"
+            else:
+                # Default to browser automation if unclear
+                self.logger.debug(f"Unclear classification, defaulting to browser_automation: {response_text}")
+                return "browser_automation"
+
+        except Exception as e:
+            self.logger.error(f"Error classifying intent: {e}", exc_info=True)
+            # Default to browser automation on error
+            return "browser_automation"
+
+    async def _process_conversation(self, instruction: str) -> None:
+        """
+        Handle conversational input (no browser automation needed).
+
+        Args:
+            instruction: User's instruction
+        """
+        self.logger.info(f"Processing as conversation: {instruction}")
+
+        conversation_prompt = f"""You are Jarvis, a helpful AI assistant. Answer the user's question or respond to their input.
+Keep your response to 1-2 sentences, spoken naturally (no markdown, no asterisks, no formatting).
+Be conversational and helpful.
+
+User: {instruction}
+
+Respond naturally and concisely."""
+
+        try:
+            message = self.llm_client.invoke(
+                [
+                    {"role": "user", "content": conversation_prompt},
+                ]
+            )
+
+            response = message.content.strip()
+            self.logger.debug(f"Conversational response: {response}")
+
+            # Speak the response directly
+            await self.session.say(response)
+
+        except Exception as e:
+            self.logger.error(f"Error processing conversation: {e}", exc_info=True)
+            await self.session.say(
+                "Sorry, I had trouble with that. Could you try again?"
+            )
 
     async def _process_new_instruction(
         self,
@@ -269,9 +365,13 @@ Keep steps concise and actionable. Example:
         try:
             self.logger.info("Starting plan execution")
 
-            # Initialize browser
-            await self.browser_tools.init_browser()
-            self.logger.debug("Browser initialized")
+            # Initialize browser only if not already open
+            if not self.browser_is_open:
+                await self.browser_tools.init_browser()
+                self.browser_is_open = True
+                self.logger.debug("Browser initialized")
+            else:
+                self.logger.debug("Browser already open, reusing existing instance")
 
             # Execute each step
             steps = self.current_plan.get("steps", [])
@@ -283,6 +383,13 @@ Keep steps concise and actionable. Example:
 
             for i, step in enumerate(steps, 1):
                 self.logger.info(f"Step {i}/{total_steps}: {step}")
+
+                # Check for explicit close command
+                if step.lower().strip() in ["close browser", "close the browser"]:
+                    await self.browser_tools.close_browser()
+                    self.browser_is_open = False
+                    await self.session.say("Browser closed.")
+                    continue
 
                 # Speak progress (brief, natural language)
                 progress_msg = self._make_progress_message(step, i, total_steps)
@@ -302,9 +409,7 @@ Keep steps concise and actionable. Example:
                 if i < total_steps:
                     await asyncio.sleep(0.5)
 
-            # Close browser
-            await self.tool_executor.close()
-
+            # Don't close browser - keep it open for follow-up commands
             self.logger.info("Plan execution complete")
 
         except Exception as e:
@@ -345,6 +450,12 @@ Keep steps concise and actionable. Example:
         self.phase = ConversationPhase.IDLE
 
         try:
+            # Close browser if it's open
+            if self.browser_is_open:
+                await self.browser_tools.close_browser()
+                self.browser_is_open = False
+                self.logger.debug("Browser closed during cleanup")
+
             await self.tool_executor.close()
         except Exception as e:
             self.logger.debug(f"Error closing executor: {e}")

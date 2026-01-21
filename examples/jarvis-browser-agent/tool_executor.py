@@ -39,24 +39,29 @@ class ToolExecutor:
             # Parse step and map to tool
             step_lower = step.lower().strip()
 
-            # Detect navigation steps
-            if "navigate" in step_lower or "go to" in step_lower or "open" in step_lower:
+            # Detect navigation steps - require URL or clear navigation keywords
+            if re.search(r'\b(navigate\s+to|go\s+to|open)\s+', step_lower):
+                return await self._execute_navigate(step)
+            elif re.search(r'https?://|www\.', step_lower):
+                # Has a URL - it's navigation
                 return await self._execute_navigate(step)
 
-            # Detect click steps
-            elif "click" in step_lower:
+            # Detect click steps - require "click" followed by specific target (not pronouns)
+            elif re.search(r'(^|\s)(click|click\s+on)\s+(the\s+)?[a-z][\w\-]*(?:\s+[a-z]+)?(\s|$)', step_lower) and not re.search(r'\bclick\s+(me|you|us|him|her|it)\b', step_lower):
                 return await self._execute_click(step)
 
-            # Detect typing steps
-            elif "type" in step_lower or "enter" in step_lower or "search" in step_lower:
+            # Detect typing steps - require "type", "enter", or "search" + content
+            elif re.search(r'\b(type|enter|input)\s+.+', step_lower):
+                return await self._execute_type(step)
+            elif re.search(r'\bsearch\s+for\s+', step_lower):
                 return await self._execute_type(step)
 
-            # Detect extraction steps
-            elif "extract" in step_lower or "get" in step_lower or "find" in step_lower:
+            # Detect extraction steps - require "extract", "get", or "find" + target
+            elif re.search(r'\b(extract|get|find)\s+', step_lower):
                 return await self._execute_extract(step)
 
             # Detect waiting steps
-            elif "wait" in step_lower or "pause" in step_lower:
+            elif re.search(r'\b(wait|pause)\s+', step_lower):
                 return await self._execute_wait(step)
 
             # Default: treat as generic step
