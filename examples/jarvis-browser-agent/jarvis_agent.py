@@ -147,7 +147,17 @@ class JarvisAgent(Agent):
             return
 
         # For new instructions, require wake word
-        if not self.wake_word_detector.check(transcript):
+        wake_word_detected = self.wake_word_detector.check(transcript)
+
+        # Log wake word detection
+        if self.voice_orchestrator and hasattr(self.voice_orchestrator, 'session_logger'):
+            self.voice_orchestrator.session_logger.log_wake_word_detection(
+                text=transcript,
+                detected=wake_word_detected,
+                wake_word=self.config.wake_word if wake_word_detected else None,
+            )
+
+        if not wake_word_detected:
             self.logger.debug("Wake word not detected")
             await self.session.say(
                 "Sorry, I didn't hear my name. Say 'Jarvis' to wake me up."

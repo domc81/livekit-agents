@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import re
+import time
+import traceback
 from enum import Enum
 from typing import Optional, Any
 
@@ -188,6 +190,11 @@ Respond with ONLY one word: "browser_automation" or "conversation"."""
 
         except Exception as e:
             self.logger.error(f"Error classifying intent: {e}", exc_info=True)
+            self.session_logger.log_error(
+                error_type="intent_classification_error",
+                message=str(e),
+                details={"traceback": traceback.format_exc()},
+            )
             # Default to browser automation on error
             return "browser_automation"
 
@@ -250,6 +257,11 @@ Respond naturally and concisely."""
 
         except Exception as e:
             self.logger.error(f"Error processing conversation: {e}", exc_info=True)
+            self.session_logger.log_error(
+                error_type="conversation_error",
+                message=str(e),
+                details={"traceback": traceback.format_exc()},
+            )
             await self.session.say(
                 "Sorry, I had trouble with that. Could you try again?"
             )
@@ -294,6 +306,11 @@ Respond naturally and concisely."""
 
         except Exception as e:
             self.logger.error(f"Error generating plan: {e}", exc_info=True)
+            self.session_logger.log_error(
+                error_type="plan_generation_error",
+                message=str(e),
+                details={"traceback": traceback.format_exc()},
+            )
             await self.session.say(
                 f"Sorry, I had trouble understanding that. Could you rephrase?"
             )
@@ -316,6 +333,7 @@ Respond naturally and concisely."""
 
         if any(word in lower_response for word in affirmatives):
             self.logger.info("User confirmed, proceeding to execution")
+            self.session_logger.log_plan_confirmed(confirmed=True)
             self.phase = ConversationPhase.EXECUTING
 
             try:
@@ -331,7 +349,12 @@ Respond naturally and concisely."""
                 await self.session.say(f"All done! {result}")
 
             except Exception as e:
-                self.logger.error(f"Execution failed: {e}")
+                self.logger.error(f"Execution failed: {e}", exc_info=True)
+                self.session_logger.log_error(
+                    error_type="execution_error",
+                    message=str(e),
+                    details={"traceback": traceback.format_exc()},
+                )
                 await self.session.say(
                     f"Sorry, I encountered an error during execution: {str(e)}"
                 )
@@ -342,6 +365,7 @@ Respond naturally and concisely."""
 
         elif any(word in lower_response for word in negatives):
             self.logger.info("User declined")
+            self.session_logger.log_plan_confirmed(confirmed=False)
             await self.session.say("Understood. What else can I help with?")
             self.phase = ConversationPhase.IDLE
             self.current_instruction = None
@@ -395,7 +419,7 @@ Keep steps concise and actionable. Example:
             json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
             if json_match:
                 plan_data = json.loads(json_match.group())
-                return {
+                plan = {
                     "instruction": instruction,
                     "steps": plan_data.get("steps", []),
                     "summary": plan_data.get("summary", "Execute the instruction"),
@@ -403,15 +427,28 @@ Keep steps concise and actionable. Example:
                 }
             else:
                 # Fallback if no JSON found
-                return {
+                plan = {
                     "instruction": instruction,
                     "steps": ["Execute the browser automation"],
                     "summary": instruction,
                     "raw_response": response_text,
                 }
 
+            # Log plan generation
+            self.session_logger.log_plan_generated(
+                plan={"steps": plan["steps"], "summary": plan["summary"]},
+                step_count=len(plan["steps"]),
+            )
+
+            return plan
+
         except Exception as e:
             self.logger.error(f"Error generating plan: {e}", exc_info=True)
+            self.session_logger.log_error(
+                error_type="plan_generation_error",
+                message=str(e),
+                details={"traceback": traceback.format_exc()},
+            )
             raise
 
     async def _summarize_plan(self, plan: dict) -> str:
@@ -474,15 +511,27 @@ Keep steps concise and actionable. Example:
                     await self.session.say("Browser closed.")
                     continue
 
+                # Log step start
+                self.session_logger.log_step_started(step_num=i, step_description=step)
+
                 # Speak progress (brief, natural language)
                 progress_msg = self._make_progress_message(step, i, total_steps)
                 await self.session.say(progress_msg)
 
-                # Execute the step
+                # Execute the step with timing
+                start_time = time.time()
                 success, result = await self.tool_executor.execute_step(step)
+                duration_ms = (time.time() - start_time) * 1000
 
                 if not success:
                     self.logger.warning(f"Step failed: {result}")
+                    # Log step failure
+                    self.session_logger.log_step_failed(
+                        step_num=i,
+                        step_description=step,
+                        error=result,
+                        duration_ms=duration_ms,
+                    )
                     # Make error message more user-friendly
                     if "Could not click" in result or "Could not find clickable" in result:
                         await self.session.say("I couldn't find that button. Let me continue...")
@@ -492,6 +541,13 @@ Keep steps concise and actionable. Example:
                         await self.session.say(f"Step had an issue. Continuing...")
                 else:
                     self.logger.debug(f"Step result: {result}")
+                    # Log step completion
+                    self.session_logger.log_step_completed(
+                        step_num=i,
+                        step_description=step,
+                        result=result,
+                        duration_ms=duration_ms,
+                    )
 
                 # Small delay between steps for natural pacing
                 if i < total_steps:
@@ -502,6 +558,11 @@ Keep steps concise and actionable. Example:
 
         except Exception as e:
             self.logger.error(f"Error executing plan: {e}", exc_info=True)
+            self.session_logger.log_error(
+                error_type="plan_execution_error",
+                message=str(e),
+                details={"traceback": traceback.format_exc()},
+            )
             await self.session.say(f"Sorry, I encountered an error: {str(e)}")
             raise
 
