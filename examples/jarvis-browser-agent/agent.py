@@ -80,21 +80,21 @@ async def entrypoint(ctx: JobContext) -> None:
         vad = ctx.proc.userdata["vad"]
 
         logger.debug("Creating TTS...")
-        # For console mode, try ElevenLabs with a default voice
+        # Try to use configured voice ID from .env
         tts = None
 
-        # Check if ElevenLabs voice ID looks valid (not the placeholder)
-        if (config.eleven_voice_id and
-            config.eleven_voice_id not in ["wDsJlOXPqcvIUKdLXjDs", "your_jarvis_voice_cloned_id"]):
+        # Use configured ElevenLabs voice ID if provided
+        if config.eleven_voice_id:
             try:
-                logger.info("Using ElevenLabs TTS with your custom voice ID")
+                logger.info(f"Using ElevenLabs TTS with voice ID: {config.eleven_voice_id}")
                 tts = elevenlabs.TTS(
                     api_key=config.eleven_api_key,
                     voice_id=config.eleven_voice_id,
                     model=config.eleven_model,
                 )
             except Exception as e:
-                logger.warning(f"ElevenLabs TTS with custom voice failed: {e}")
+                logger.warning(f"ElevenLabs TTS with voice ID {config.eleven_voice_id} failed: {e}")
+                logger.info("Falling back to default voice (Rachel)...")
 
         # If custom voice failed, try default ElevenLabs voice
         if tts is None:

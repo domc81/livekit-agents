@@ -14,6 +14,14 @@ class Settings:
     def __init__(self):
         self.headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
         self.slow_mo = int(os.getenv("PLAYWRIGHT_SLOW_MO", 0))
+        self.page_load_timeout_ms = 30000  # 30 second timeout for page loads
+        self.screenshots_dir = Path("screenshots")
+        self.screenshots_dir.mkdir(exist_ok=True)
+        self.n8n_base_url = os.getenv("N8N_BASE_URL", "")
+        self.n8n_api_key = os.getenv("N8N_API_KEY", "")
+        self.n8n_email = os.getenv("N8N_EMAIL", "")
+        self.n8n_password = os.getenv("N8N_PASSWORD", "")
+        self.n8n_use_basic_auth = os.getenv("N8N_USE_BASIC_AUTH", "false").lower() == "true"
 
 settings = Settings()
 
