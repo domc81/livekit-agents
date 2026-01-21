@@ -8,7 +8,7 @@ from livekit.agents.voice import AgentSession
 
 from config import JarvisSettings
 from wake_word_detector import WakeWordDetector
-from voice_orchestrator import VoiceOrchestrator
+from voice_orchestrator import VoiceOrchestrator, ConversationPhase
 
 logger = logging.getLogger("jarvis")
 
@@ -126,7 +126,19 @@ class JarvisAgent(Agent):
         transcript = new_message.text_content or ""
         self.logger.info(f"User input: {transcript}")
 
-        # Check wake word
+        # During confirmation phase, accept yes/no without wake word
+        if (
+            self.voice_orchestrator
+            and self.voice_orchestrator.phase == ConversationPhase.CONFIRMING
+        ):
+            self.logger.debug("In confirmation phase - accepting response without wake word")
+            await self.voice_orchestrator.handle_user_input(
+                instruction=transcript,
+                turn_ctx=turn_ctx,
+            )
+            return
+
+        # For new instructions, require wake word
         if not self.wake_word_detector.check(transcript):
             self.logger.debug("Wake word not detected")
             await self.session.say(
