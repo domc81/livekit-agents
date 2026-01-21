@@ -79,18 +79,46 @@ async def entrypoint(ctx: JobContext) -> None:
         config: JarvisSettings = ctx.proc.userdata["config"]
         vad = ctx.proc.userdata["vad"]
 
-        logger.debug("Creating TTS (ElevenLabs)...")
-        # Initialize TTS with ElevenLabs
-        tts = elevenlabs.TTS(
-            api_key=config.eleven_api_key,
-            voice_id=config.eleven_voice_id,
-            model=config.eleven_model,
-        )
+        logger.debug("Creating TTS...")
+        # Try ElevenLabs, fallback to Silero (local) if voice ID is invalid
+        tts = None
+
+        # Check if ElevenLabs voice ID looks valid (not the placeholder)
+        if (config.eleven_voice_id and
+            config.eleven_voice_id not in ["wDsJlOXPqcvIUKdLXjDs", "your_jarvis_voice_cloned_id"]):
+            try:
+                logger.debug("Using ElevenLabs TTS")
+                tts = elevenlabs.TTS(
+                    api_key=config.eleven_api_key,
+                    voice_id=config.eleven_voice_id,
+                    model=config.eleven_model,
+                )
+            except Exception as e:
+                logger.warning(f"ElevenLabs TTS initialization failed: {e}")
+
+        # If ElevenLabs not available, use local Silero TTS
+        if tts is None:
+            try:
+                logger.info("Using local Silero TTS (no API credentials needed)")
+                tts = silero.TTS(voice="en_114")  # English female voice
+            except Exception as e:
+                logger.error(f"Silero TTS initialization failed: {e}. Console mode will have no speech.")
+                # Create minimal fallback
+                from livekit.agents import tts as tts_module
+                tts = tts_module.TTSForwarder()
+
         logger.debug("TTS initialized")
 
-        logger.debug("Creating STT (Deepgram)...")
-        # Initialize STT (via LiveKit inference)
-        stt = inference.STT("deepgram/nova-3", language="en")
+        logger.debug("Creating STT (Silero - Local)...")
+        # Use local Silero STT for console mode (no API credentials needed)
+        try:
+            from livekit.plugins import silero as silero_plugin
+            stt = silero_plugin.STT(language="en")
+        except ImportError:
+            # Fallback to Google Cloud STT if Silero not available
+            # This requires GOOGLE_APPLICATION_CREDENTIALS or gcloud setup
+            logger.warning("Silero STT not available, using Google Cloud Speech")
+            stt = inference.STT("google_cloud/default", language="en")
         logger.debug("STT initialized")
 
         logger.debug("Creating AgentSession...")
