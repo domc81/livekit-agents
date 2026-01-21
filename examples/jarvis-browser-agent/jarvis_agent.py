@@ -126,6 +126,14 @@ class JarvisAgent(Agent):
         transcript = new_message.text_content or ""
         self.logger.info(f"User input: {transcript}")
 
+        # Check for stop/cancel commands during execution (no wake word needed)
+        if self.voice_orchestrator and self.voice_orchestrator.phase == ConversationPhase.EXECUTING:
+            lower_transcript = transcript.lower()
+            if any(word in lower_transcript for word in ["stop", "cancel", "abort", "halt"]):
+                self.logger.info("Stop/cancel command detected during execution")
+                await self.voice_orchestrator.request_cancellation()
+                return
+
         # During confirmation phase, accept yes/no without wake word
         if (
             self.voice_orchestrator
@@ -167,22 +175,33 @@ class JarvisAgent(Agent):
             transcript: Original transcript with wake word
 
         Returns:
-            Instruction without wake word
+            Instruction without wake word (cleaned up)
+
+        Examples:
+            "Hey, Jarvis. Click the button" → "Click the button"
+            "Jarvis open google.com" → "open google.com"
+            "Jarvis, search for cats" → "search for cats"
         """
+        import re
+
         lower_transcript = transcript.lower()
 
         # Find and remove wake word
         for word in self.config.wake_word.split():
             word_lower = word.lower()
             if word_lower in lower_transcript:
-                # Remove wake word and surrounding punctuation/spaces
-                idx = lower_transcript.find(word_lower)
-                before = transcript[:idx]
-                after = transcript[idx + len(word_lower) :]
+                # Use regex to remove wake word with word boundaries
+                # This handles "Jarvis" in any case
+                pattern = rf"\b{re.escape(word_lower)}\b"
+                result = re.sub(pattern, "", transcript, flags=re.IGNORECASE)
 
-                # Clean up extra spaces and punctuation
-                result = (before + after).strip()
-                result = result.lstrip(".,!?").strip()
+                # Clean up: remove leading/trailing spaces, punctuation, and duplicates
+                result = result.strip()  # Remove leading/trailing spaces
+                result = re.sub(r"^\W+\s*", "", result)  # Remove leading punctuation
+                result = re.sub(r"\s+", " ", result)  # Remove duplicate spaces
+                result = result.strip()
+
+                self.logger.debug(f"Wake word removed: '{transcript}' → '{result}'")
                 return result
 
         return transcript

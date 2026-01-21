@@ -16,6 +16,7 @@ from browser_automation.tools.browser_tools import BrowserTools
 from browser_automation.tools.registry import ToolRegistry
 from browser_automation.state import AgentState, BrowserContext
 from tool_executor import ToolExecutor
+from session_logger import create_session_logger, SessionLogger
 
 logger = logging.getLogger("jarvis.orchestrator")
 
@@ -49,6 +50,9 @@ class VoiceOrchestrator:
         self.current_plan: Optional[dict] = None
         self.logger = logging.getLogger("jarvis.orchestrator")
 
+        # Initialize session logger for comprehensive tracking
+        self.session_logger: SessionLogger = create_session_logger()
+
         # Initialize browser automation components
         self.browser_tools = BrowserTools()
         self.tool_registry = ToolRegistry(self.browser_tools)
@@ -68,7 +72,8 @@ class VoiceOrchestrator:
             max_tokens=1000,
         )
 
-        self.logger.info("Voice orchestrator initialized with browser automation")
+        self.logger.info(f"Voice orchestrator initialized (session: {self.session_logger.session_id})")
+        self.session_logger.logger.info("Voice orchestrator initialized with browser automation")
 
     async def handle_user_input(
         self,
@@ -83,6 +88,7 @@ class VoiceOrchestrator:
             turn_ctx: Chat context with conversation history
         """
         self.logger.info(f"Processing instruction: {instruction}")
+        self.session_logger.log_user_input(instruction, phase=self.phase.value)
 
         # Route based on current phase
         if self.phase == ConversationPhase.CONFIRMING:
@@ -92,6 +98,7 @@ class VoiceOrchestrator:
             # New instruction - classify intent first
             intent = await self._classify_intent(instruction)
             self.logger.info(f"Classified intent: {intent}")
+            self.session_logger.log_intent_classification(instruction, intent)
 
             if intent == "browser_automation":
                 # Route to browser automation workflow
@@ -109,6 +116,8 @@ class VoiceOrchestrator:
         """
         Classify if instruction needs browser automation or is conversational.
 
+        Uses pattern matching first (fast), falls back to LLM only if needed.
+
         Args:
             instruction: User's instruction
 
@@ -117,12 +126,43 @@ class VoiceOrchestrator:
         """
         self.logger.debug(f"Classifying intent for: {instruction}")
 
+        # Stage 1: Pattern matching for clear browser automation keywords
+        browser_keywords = [
+            "click", "type", "navigate", "go to", "open", "search", "find",
+            "scroll", "fill", "submit", "extract", "take screenshot", "screenshot",
+            "enter", "select", "check", "uncheck", "hover", "download",
+            "refresh", "reload", "go back", "go forward", "back button",
+        ]
+
+        instruction_lower = instruction.lower().strip()
+
+        # Check if instruction contains clear browser automation keywords
+        for keyword in browser_keywords:
+            if keyword in instruction_lower:
+                self.logger.debug(f"Pattern match: found '{keyword}' → browser_automation")
+                return "browser_automation"
+
+        # Stage 2: Pattern matching for clear conversation keywords
+        conversation_keywords = [
+            "what time", "what date", "what's the", "current time",
+            "tell me", "explain", "how do", "why", "what is",
+            "remind me", "remember", "set alarm", "timer",
+        ]
+
+        for keyword in conversation_keywords:
+            if keyword in instruction_lower:
+                self.logger.debug(f"Pattern match: found '{keyword}' → conversation")
+                return "conversation"
+
+        # Stage 3: If no clear pattern match, use LLM for classification
+        self.logger.debug("No clear pattern match, using LLM for classification")
+
         classification_prompt = f"""Classify if this user instruction needs browser automation or is just conversation.
 
 User instruction: "{instruction}"
 
-Browser automation includes: opening websites, searching, clicking, typing, filling forms, extracting information, navigation.
-Conversation includes: questions, general chat, requests for information, explanations.
+Browser automation includes: opening websites, searching, clicking, typing, filling forms, extracting information, navigation, screenshots.
+Conversation includes: questions, general chat, requests for information, explanations, time/date queries.
 
 Important: Phrases like "go to sleep", "open up to me", "search my memory" are conversation, NOT browser automation.
 

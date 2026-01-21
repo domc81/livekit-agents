@@ -67,8 +67,16 @@ class BrowserTools:
 
             await self.page.goto(url, timeout=settings.page_load_timeout_ms)
 
-            # Wait for page to be interactive
-            await self.page.wait_for_load_state("networkidle")
+            # Wait for page to be interactive with timeout protection
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception as e:
+                # Page didn't reach networkidle, but that's okay on dynamic sites
+                # Continue execution - page is likely functional
+                import logging
+                logging.getLogger("jarvis.browser").debug(
+                    f"Page didn't reach networkidle, continuing anyway: {e}"
+                )
 
             title = await self.page.title()
             current_url = self.page.url
