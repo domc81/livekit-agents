@@ -22,6 +22,9 @@ class JarvisSettings(BaseSettings):
     eleven_voice_id: str
     eleven_model: str = "eleven_turbo_v2_5"
 
+    # STT: Deepgram (optional)
+    deepgram_api_key: Optional[str] = None
+
     # ========== Browser Automation ==========
     playwright_headless: bool = False
     playwright_slow_mo: int = 0

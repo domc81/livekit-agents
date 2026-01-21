@@ -8,7 +8,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from livekit.agents import AgentServer, JobContext, JobProcess, cli, inference
-from livekit.plugins import elevenlabs, silero
+from livekit.plugins import elevenlabs, silero, deepgram
 from livekit.agents.voice import AgentSession
 
 from config import JarvisSettings, get_settings
@@ -80,45 +80,75 @@ async def entrypoint(ctx: JobContext) -> None:
         vad = ctx.proc.userdata["vad"]
 
         logger.debug("Creating TTS...")
-        # Try ElevenLabs, fallback to Silero (local) if voice ID is invalid
+        # For console mode, try ElevenLabs with a default voice
         tts = None
 
         # Check if ElevenLabs voice ID looks valid (not the placeholder)
         if (config.eleven_voice_id and
             config.eleven_voice_id not in ["wDsJlOXPqcvIUKdLXjDs", "your_jarvis_voice_cloned_id"]):
             try:
-                logger.debug("Using ElevenLabs TTS")
+                logger.info("Using ElevenLabs TTS with your custom voice ID")
                 tts = elevenlabs.TTS(
                     api_key=config.eleven_api_key,
                     voice_id=config.eleven_voice_id,
                     model=config.eleven_model,
                 )
             except Exception as e:
-                logger.warning(f"ElevenLabs TTS initialization failed: {e}")
+                logger.warning(f"ElevenLabs TTS with custom voice failed: {e}")
 
-        # If ElevenLabs not available, use local Silero TTS
+        # If custom voice failed, try default ElevenLabs voice
         if tts is None:
             try:
-                logger.info("Using local Silero TTS (no API credentials needed)")
-                tts = silero.TTS(voice="en_114")  # English female voice
+                logger.info("Using ElevenLabs TTS with default voice (Rachel)")
+                # "21m00Tcm4TlvDq8ikWAM" is Rachel - a default ElevenLabs voice that always exists
+                tts = elevenlabs.TTS(
+                    api_key=config.eleven_api_key,
+                    voice_id="21m00Tcm4TlvDq8ikWAM",  # Rachel - default voice
+                    model="eleven_turbo_v2_5",
+                )
             except Exception as e:
-                logger.error(f"Silero TTS initialization failed: {e}. Console mode will have no speech.")
-                # Create minimal fallback
-                from livekit.agents import tts as tts_module
-                tts = tts_module.TTSForwarder()
+                logger.warning(f"ElevenLabs TTS with default voice failed: {e}")
+                # Last resort: use text-only output for console
+                logger.warning("No TTS available. Agent will output text only (no audio).")
+
+                # Create a simple text-based TTS that just prints
+                class TextOnlyTTS:
+                    """Fallback TTS that outputs text to console"""
+                    async def synthesize(self, text: str):
+                        # Just return empty audio, text will be shown in transcripts
+                        return None
+
+                tts = TextOnlyTTS()
 
         logger.debug("TTS initialized")
 
-        logger.debug("Creating STT (Silero - Local)...")
-        # Use local Silero STT for console mode (no API credentials needed)
-        try:
-            from livekit.plugins import silero as silero_plugin
-            stt = silero_plugin.STT(language="en")
-        except ImportError:
-            # Fallback to Google Cloud STT if Silero not available
-            # This requires GOOGLE_APPLICATION_CREDENTIALS or gcloud setup
-            logger.warning("Silero STT not available, using Google Cloud Speech")
-            stt = inference.STT("google_cloud/default", language="en")
+        logger.debug("Creating STT...")
+        stt = None
+
+        # Try to use Deepgram plugin directly if API key is available
+        deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
+        if deepgram_api_key:
+            try:
+                logger.info("Using Deepgram plugin STT (direct API)")
+                stt = deepgram.STT(api_key=deepgram_api_key)
+            except Exception as e:
+                logger.warning(f"Deepgram plugin STT failed: {e}")
+
+        # If Deepgram plugin didn't work, try inference API
+        if stt is None:
+            try:
+                logger.info("Using Deepgram STT via LiveKit inference")
+                stt = inference.STT("deepgram/nova-2", language="en")
+            except Exception as e:
+                logger.warning(f"Deepgram inference STT failed: {e}")
+                logger.error(
+                    "STT initialization failed. For console mode to work, you need either:\n"
+                    "  1. Set DEEPGRAM_API_KEY in .env, or\n"
+                    "  2. Set up valid LiveKit credentials (LIVEKIT_URL, API_KEY, SECRET), or\n"
+                    "  3. Use the agent with a LiveKit room connection"
+                )
+                raise
+
         logger.debug("STT initialized")
 
         logger.debug("Creating AgentSession...")
